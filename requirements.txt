@@ -1,4 +1,6 @@
 streamlit
-google-generativeai
 EbookLib
 beautifulsoup4
+google-generativeai
+chromadb
+pysqlite3-binary
