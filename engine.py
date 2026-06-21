@@ -115,9 +115,16 @@ class VectorDBManager:
         )
 
     def index_chunks(self, chunks: list):
-        """Memasukkan teks ke ruang vektor."""
+        """Memasukkan teks ke ruang vektor secara bertahap (batching) untuk menghindari batas API."""
         ids = [f"chunk_{i}" for i in range(len(chunks))]
-        self.collection.add(documents=chunks, ids=ids)
+        
+        # Google Gemini API membatasi maksimal 100 teks per satu kali proses embed.
+        # Kita mencicil injeksi dokumen ini dalam batch berukuran 90 untuk keamanan penuh.
+        batch_size = 90
+        for i in range(0, len(chunks), batch_size):
+            batch_chunks = chunks[i : i + batch_size]
+            batch_ids = ids[i : i + batch_size]
+            self.collection.add(documents=batch_chunks, ids=batch_ids)
 
     def search_semantic(self, query: str, n_results=2) -> str:
         """Mencari referensi terdekat berdasarkan pertanyaan pengguna."""

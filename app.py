@@ -1,10 +1,12 @@
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+# Patch untuk ChromaDB khusus di Streamlit Cloud (Lingkungan Linux)
+# Menggunakan try-except agar tidak error saat dijalankan di lokal (Windows)
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass  # Abaikan dan gunakan sqlite3 bawaan jika dijalankan di komputer lokal
 
-import os
-import hashlib
-import streamlit as st
 import os
 import hashlib
 import streamlit as st
@@ -84,7 +86,7 @@ def main():
         vdb_manager = VectorDBManager(koleksi_nama, embedding_fn)
         potongan_rag = chunker.generate_chunks(teks_arab_final)
         
-        with st.spinner("⏳ Membangun indeks Vektor..."):
+        with st.spinner("⏳ Membangun indeks Vektor (Proses Batching)..."):
             vdb_manager.index_chunks(potongan_rag)
         st.success(f"✅ Vektor DB Siap! {len(potongan_rag)} potongan teks berhasil diindeks.")
 
