@@ -1,150 +1,129 @@
+import os
+import hashlib
 import streamlit as st
-import ebooklib
-import re
-import google.generativeai as genai
-from ebooklib import epub
-from bs4 import BeautifulSoup
+from engine import GeminiService, GeminiEmbeddingFunction, EPubExtractor, RAGChunker, VectorDBManager
 
-# Mengambil API Key secara aman dari Streamlit Secrets (Kesiapan Step 8)
-api_key = st.secrets["GOOGLE_API_KEY"]
-genai.configure(api_key=api_key)
-
-# Inisialisasi Model Gemini
-model = genai.GenerativeModel('gemini-2.5-flash')
-
-# 1. Konfigurasi Halaman Web
-st.set_page_config(
-    page_title="EPUB Arab Translator",
-    page_icon="📖",
-    layout="wide" 
-)
-
-# Judul Utama
-st.title("📖 EPUB Arabic to Text Translator")
-st.markdown("Aplikasi web pintar untuk mengekstrak dan menerjemahkan buku EPUB bahasa Arab.")
-st.divider()
-
-# 2. Persiapan Layout Kolom
-kolom_kontrol1, kolom_kontrol2 = st.columns([2, 1])
-kolom_kiri, kolom_kanan = st.columns(2)
-
-# Ambil input bahasa dari user
-with kolom_kontrol2:
-    DAFTAR_BAHASA = [
-        "Bahasa Indonesia", "English", "日本語 (Jepang)", "韓国어 (Korea)", 
-        "العربية (Arab)", "Français (Prancis)", "Deutsch (Jerman)", 
-        "Español (Spanyol)"
-    ]
-    bahasa_pilihan = st.selectbox("🎯 Pilih Bahasa Target Terjemahan:", DAFTAR_BAHASA)
-
-# Ambil input file EPUB dari user
-with kolom_kontrol1:
-    berkas_diunggah = st.file_uploader("📂 Unggah Buku EPUB Bahasa Arab Anda:", type=["epub"])
-
-# Fungsi Optimasi Regex menggunakan Blok Unicode Arab (Mencegah Language Leakage)
-def bersihkan_dan_baca_arab(html_content):
-    soup = BeautifulSoup(html_content, 'html.parser')
-    teks_bersih = soup.get_text()
+def main():
+    # Konfigurasi Halaman Web
+    st.set_page_config(page_title="EPUB Arab RAG Engine", page_icon="📖", layout="wide")
     
-    # Menjaga karakter khusus Arab murni (termasuk harakat dan angka Arab)
-    # \u0600-\u06FF adalah blok utama aksara Arab
-    karakter_arab = re.findall(r'[\u0600-\u06FF\s]+', teks_bersih)
-    teks_arab_murni = " ".join(karakter_arab)
-    
-    # Merapikan spasi ganda hasil ekstraksi
-    teks_arab_murni = re.sub(r'\s+', ' ', teks_arab_murni)
-    return teks_arab_murni.strip()
+    # 1. Inisialisasi API Key & Engine
+    try:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+    except KeyError:
+        st.error("⚠️ Kunci 'GOOGLE_API_KEY' tidak ditemukan di dalam file .streamlit/secrets.toml")
+        st.stop()
 
-# Fungsi RAG Chunking: Memecah teks besar menjadi bagian-bagian logis berdasarkan jumlah kata
-def buat_potongan_teks(teks, batas_kata=300):
-    kata = teks.split()
-    potongan = []
-    for i in range(0, len(kata), batas_kata):
-        potongan.append(" ".join(kata[i:i+batas_kata]))
-    return potongan
+    gemini_service = GeminiService(api_key)
+    chunker = RAGChunker(chunk_size=500, overlap=150)
+    embedding_fn = GeminiEmbeddingFunction(gemini_service)
 
-# 3. Proses Utama Aplikasi (Jika File Sudah Diunggah)
-if berkas_diunggah is not None:
-    # Simpan sementara file yang diunggah ke dalam disk lokal server
-    with open("temp_book.epub", "wb") as f:
-        f.write(berkas_diunggah.getbuffer())
+    # 2. Desain UI: Sidebar untuk Kontrol Utama
+    with st.sidebar:
+        st.title("⚙️ Panel Kontrol")
+        st.markdown("Pengaturan sumber buku dan RAG.")
+        st.divider()
         
-    # Membaca buku EPUB
-    buku = epub.read_epub("temp_book.epub")
-    
-    # Ekstraksi Bab/Item dokumen dokumen di dalam EPUB yang berisi teks (Dokumen HTML)
-    daftar_bab = []
-    for item in buku.get_items():
-        if item.get_type() == ebooklib.ITEM_DOCUMENT:
-            daftar_bab.append(item)
+        # Pengecekan folder dataset lokal
+        dataset_dir = "dataset epub"
+        if not os.path.exists(dataset_dir):
+            st.error(f"Folder '{dataset_dir}' tidak ditemukan!")
+            st.stop()
             
-    # Buat dropdown list di UI kontrol untuk memilih bab buku
-    with kolom_kontrol1:
+        # Mengambil file epub, dibatasi maksimal 3 file saja sesuai permintaan
+        semua_file = [f for f in os.listdir(dataset_dir) if f.endswith('.epub')]
+        epub_files = semua_file[:3] 
+        
+        if not epub_files:
+            st.warning("Belum ada file buku di dalam folder dataset.")
+            st.stop()
+            
+        buku_terpilih = st.selectbox("📂 Pilih Buku EPUB:", epub_files)
+        file_path_lengkap = os.path.join(dataset_dir, buku_terpilih)
+
+        DAFTAR_BAHASA = ["Bahasa Indonesia", "English", "日本語 (Jepang)", "العربية (Arab)"]
+        bahasa_pilihan = st.selectbox("🎯 Target Terjemahan AI:", DAFTAR_BAHASA)
+
+    # 3. Konten Utama Halaman
+    st.title("📖 EPUB Arabic to Text RAG Analyzer")
+    st.markdown("Demonstrasi Arsitektur RAG Berbasis Vector Database ChromaDB.")
+
+    if buku_terpilih:
+        # Menghindari ekstraksi ulang file fisik berkali-kali (State Management)
+        if "extractor" not in st.session_state or st.session_state.get("current_file_name") != buku_terpilih:
+            with st.spinner("Membongkar arsip dokumen EPUB..."):
+                st.session_state.extractor = EPubExtractor(file_path_lengkap)
+                st.session_state.current_file_name = buku_terpilih
+
+        daftar_nama_bab = st.session_state.extractor.get_chapter_names()
+        
         pilihan_bab_index = st.selectbox(
-            "📖 Pilih Bab / Halaman Buku yang Ingin Dianalisis:",
-            range(len(daftar_bab)),
-            format_func=lambda x: f"Bab {x + 1} - {daftar_bab[x].get_name()}"
+            "📑 Pilih Bab untuk Diindeks ke Vector Database:", 
+            range(len(daftar_nama_bab)), 
+            format_func=lambda x: daftar_nama_bab[x]
         )
+
+        teks_arab_final = st.session_state.extractor.extract_pure_arabic(pilihan_bab_index)
+
+        if not teks_arab_final:
+            st.warning("⚠️ Tidak ditemukan teks Arab murni pada bab ini.")
+            return
+
+        # Membuat hash unik (MD5) dari nama buku agar ChromaDB tidak error karena karakter Arab
+        buku_hash = hashlib.md5(buku_terpilih.encode('utf-8')).hexdigest()[:8]
+        koleksi_nama = f"koleksi_buku_{buku_hash}_bab_{pilihan_bab_index}"
         
-    # Ambil konten HTML dari bab yang dipilih user
-    bab_terpilih = daftar_bab[pilihan_bab_index]
-    html_konten = bab_terpilih.get_content().decode('utf-8')
-    
-    # Jalankan fungsi optimasi pembersihan data Arab
-    teks_arab_final = bersihkan_dan_baca_arab(html_konten)
-    
-    if not teks_arab_final:
-        st.warning("⚠️ Tidak ditemukan teks beraksara Arab murni pada bab ini. Silakan pilih bab lain.")
-    else:
-        # Implementasi RAG Dasar: Pecah teks Arab menjadi beberapa chunk utuh
-        potongan_rag = buat_potongan_teks(teks_arab_final, batas_kata=250)
+        # Proses indexing RAG berjalan di balik layar
+        vdb_manager = VectorDBManager(koleksi_nama, embedding_fn)
+        potongan_rag = chunker.generate_chunks(teks_arab_final)
         
-        # Kontrol Navigasi Chunk di kolom kontrol
-        with kolom_kontrol2:
-            chunk_terpilih = st.selectbox(
-                "🧩 Bagian Teks (RAG Chunk):",
-                range(len(potongan_rag)),
-                format_func=lambda x: f"Bagian {x + 1} dari {len(potongan_rag)}"
-            )
+        with st.spinner("⏳ Membangun indeks Vektor..."):
+            vdb_manager.index_chunks(potongan_rag)
+        st.success(f"✅ Vektor DB Siap! {len(potongan_rag)} potongan teks berhasil diindeks.")
+
+        st.divider()
+        
+        # 4. Desain UI: Penggunaan st.tabs untuk visual yang lebih rapi
+        st.subheader("🔍 Kueri Semantic Search")
+        kueri_pengguna = st.text_input("Tanyakan sesuatu ke AI (Misal: 'Apa intisari dari mukadimah ini?'):")
+        mulai_analisis = st.button("🚀 Analisis Menggunakan RAG", use_container_width=True)
+
+        # Tab antarmuka Streamlit
+        tab1, tab2, tab3 = st.tabs(["🤖 Analisis AI", "📄 Referensi Ditemukan (RAG)", "📝 Teks Sumber Asli"])
+        
+        with tab3:
+            # Tab ini hanya untuk melihat teks asli jika pengguna penasaran
+            st.write(teks_arab_final)
             
-        teks_chunk_aktif = potongan_rag[chunk_terpilih]
-        
-        # Tampilkan Teks Sumber di UI Kiri
-        with kolom_kiri:
-            st.subheader("📝 Teks Sumber Arab (Hasil Filter)")
-            with st.container(height=500):
-                st.write(teks_chunk_aktif)
+        if mulai_analisis and kueri_pengguna:
+            with st.spinner("Menelusuri database vektor..."):
+                # Menarik konteks dari ChromaDB
+                teks_konteks = vdb_manager.search_semantic(kueri_pengguna, n_results=2)
                 
-        # Tombol Eksekusi AI Terjemahan
-        mulai_terjemah = st.button("🚀 Terjemahkan & Analisis dengan Gemini AI", use_container_width=True)
-        
-        if mulai_terjemah:
-            with st.spinner("Sedang memproses dokumen akademis Anda melalui Gemini 2.5-Flash..."):
-                # System Instruction & Prompting Engineering Tingkat Lanjut (Step 4)
-                prompt = f"""
-                Kamu adalah seorang asisten akademis profesional, ahli filologi klasik, dan penerjemah kitab bahasa Arab berwawasan luas.
-                
-                TUGAS MUTLAK:
-                1. Terjemahkan teks Arab murni di bawah ini ke dalam {bahasa_pilihan}.
-                2. JELASKAN juga intisari akademis, kontekstual, dan analisis struktural dari teks tersebut secara komprehensif.
-                3. WAJIB GUNAKAN {bahasa_pilihan} UNTUK SELURUH BALASANMU. Jangan gunakan bahasa lain!
-                
-                ATURAN FORMATTING VISUAL:
-                1. Gunakan format Markdown yang rapi.
-                2. DILARANG menggunakan Heading 1 (#) atau Heading 2 (##). Gunakan Heading 3 (###) atau teks tebal (**) saja untuk judul bagian.
-                3. Pisahkan bagian "Terjemahan" dan "Penjelasan/Intisari" dengan sangat jelas menggunakan garis pemisah.
-                4. LANGSUNG berikan hasil analisis. DILARANG memberikan salam pembuka, ramah tamah, atau basa-basi teks sistem.
-                
-                Berikut adalah potongan teks Arab murni yang harus dianalisis (RAG Chunk):
-                {teks_chunk_aktif}
-                """
-                
-                # Panggil Gemini API
-                response = model.generate_content(prompt)
-                
-                # Tampilkan Hasil Analisis AI di UI Kanan
-                with kolom_kanan:
-                    st.subheader("🤖 Hasil Terjemahan & Analisis AI")
-                    with st.container(height=500):
-                        st.write(response.text)
-                    st.success("Proses terjemahan dan analisis berhasil diselesaikan.")
+                with tab2:
+                    st.info("Konteks teks terdekat dari buku yang diambil oleh Vector Database:")
+                    st.write(teks_konteks)
+                    
+                with tab1:
+                    with st.spinner("Menghasilkan analisis akademis dengan Gemini..."):
+                        prompt = f"""
+                        Kamu adalah ahli filologi dan penerjemah akademis kitab bahasa Arab.
+                        PERTANYAAN PENGGUNA: "{kueri_pengguna}"
+                        
+                        TUGAS MUTLAK:
+                        1. Jawab pertanyaan pengguna HANYA berdasarkan konteks teks Arab yang disediakan.
+                        2. Terjemahkan bagian relevan ke dalam {bahasa_pilihan}.
+                        3. Jelaskan intisarinya.
+                        
+                        ATURAN FORMATTING VISUAL:
+                        Gunakan format Markdown rapi. DILARANG menggunakan Heading 1 (#) atau Heading 2 (##). Gunakan Heading 3 (###).
+                        LANGSUNG berikan hasil analisis tanpa basa-basi.
+                        
+                        KONTEKS TEKS (RAG Chunk):
+                        {teks_konteks}
+                        """
+                        response = gemini_service.analyze_context(prompt)
+                        st.write(response)
+
+if __name__ == "__main__":
+    main()

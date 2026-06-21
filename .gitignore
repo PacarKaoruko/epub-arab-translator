@@ -1,2 +1,4 @@
+.streamlit/secrets.toml
 env/
+temp_book.epub
 __pycache__/
